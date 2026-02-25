@@ -40,13 +40,10 @@ fastify.all("/incoming-call", async (request, reply) => {
 
 fastify.register(async (fastify) => {
     fastify.get("/media-stream", { websocket: true }, (connection) => {
+
         console.log("Client connected");
 
         let streamSid = null;
-        let twilioStarted = false;
-        let openaiReady = false;
-        let sessionInitialized = false;
-
         let audioBuffer = Buffer.alloc(0);
 
         const openAiWs = new WebSocket(
@@ -59,60 +56,54 @@ fastify.register(async (fastify) => {
             }
         );
 
-        /* ========= INIT ========= */
-
-        const tryInit = () => {
-            if (sessionInitialized) return;
-            if (!twilioStarted || !openaiReady) return;
-
-            sessionInitialized = true;
-
-            // configuração da sessão
-            openAiWs.send(JSON.stringify({
-                type: "session.update",
-                session: {
-                    input_audio_format: "g711_ulaw",
-                    output_audio_format: "g711_ulaw",
-                    voice: "alloy",
-                    modalities: ["audio", "text"],
-                    temperature: 0.7,
-                }
-            }));
-
-            // 🔥 força fala imediata
-            speakGreeting();
-        };
-
-        const speakGreeting = () => {
-            openAiWs.send(JSON.stringify({
-                type: "response.create",
-                response: {
-                    modalities: ["audio"],
-                    instructions:
-                        "Diga exatamente: Olá, sou o assistente da clínica Modelo. Como posso te ajudar?"
-                }
-            }));
-        };
-
-        /* ========= OPENAI ========= */
+        /* =========================
+           OPENAI EVENTS
+        ========================= */
 
         openAiWs.on("open", () => {
             console.log("OpenAI connected");
-            openaiReady = true;
-            tryInit();
         });
 
         openAiWs.on("message", (data) => {
             const msg = JSON.parse(data);
 
+            // sessão pronta
+            if (msg.type === "session.created") {
+                console.log("Session ready");
+
+                // configura sessão
+                openAiWs.send(JSON.stringify({
+                    type: "session.update",
+                    session: {
+                        input_audio_format: "g711_ulaw",
+                        output_audio_format: "g711_ulaw",
+                        voice: "alloy",
+                        modalities: ["audio", "text"],
+                        temperature: 0.7,
+                    }
+                }));
+
+                // 🔥 força fala inicial
+                setTimeout(() => {
+                    openAiWs.send(JSON.stringify({
+                        type: "response.create",
+                        response: {
+                            modalities: ["audio"],
+                            instructions:
+                                "Diga exatamente: Olá, sou o assistente da clínica Modelo. Como posso te ajudar?"
+                        }
+                    }));
+                }, 300);
+            }
+
+            // áudio vindo do OpenAI
             if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
 
                 const chunk = Buffer.from(msg.delta, "base64");
                 audioBuffer = Buffer.concat([audioBuffer, chunk]);
 
-                // Twilio precisa frames de 160 bytes
+                // Twilio exige frames de 160 bytes
                 while (audioBuffer.length >= 160) {
-
                     const frame = audioBuffer.subarray(0, 160);
                     audioBuffer = audioBuffer.subarray(160);
 
@@ -127,7 +118,9 @@ fastify.register(async (fastify) => {
             }
         });
 
-        /* ========= TWILIO ========= */
+        /* =========================
+           TWILIO EVENTS
+        ========================= */
 
         connection.on("message", (message) => {
             const data = JSON.parse(message);
@@ -136,9 +129,7 @@ fastify.register(async (fastify) => {
 
                 case "start":
                     streamSid = data.start.streamSid;
-                    twilioStarted = true;
                     console.log("Stream started:", streamSid);
-                    tryInit();
                     break;
 
                 case "media":
@@ -156,6 +147,7 @@ fastify.register(async (fastify) => {
                     break;
 
                 case "mark":
+                    // controle de fluxo Twilio
                     break;
             }
         });
@@ -170,7 +162,7 @@ fastify.register(async (fastify) => {
 });
 
 /* =========================
-   START
+   START SERVER
 ========================= */
 
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
