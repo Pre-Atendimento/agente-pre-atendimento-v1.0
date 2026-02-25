@@ -3,14 +3,13 @@ import WebSocket from "ws";
 import dotenv from "dotenv";
 import fastifyFormBody from "@fastify/formbody";
 import fastifyWs from "@fastify/websocket";
-import fetch from "node-fetch";
-import https from "https";
 
 dotenv.config();
+
 const { OPENAI_API_KEY } = process.env;
 
 if (!OPENAI_API_KEY) {
-    console.error("Missing OpenAI API key.");
+    console.error("Missing OpenAI API key");
     process.exit(1);
 }
 
@@ -19,55 +18,12 @@ fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
 const PORT = process.env.PORT || 5050;
-const VOICE = "alloy";
 
 /* =========================
-   UTIL
+   TWILIO WEBHOOK
 ========================= */
-
-function obterDataFormatada() {
-    return new Date().toLocaleDateString("pt-BR", {
-        day: "numeric",
-        month: "long",
-        year: "numeric",
-        timeZone: "America/Sao_Paulo",
-    });
-}
-
-async function fetchAgendaData() {
-    const url = "https://srv658237.hstgr.cloud/clinica.php";
-    const agent = new https.Agent({ rejectUnauthorized: false });
-    try {
-        const res = await fetch(url, { agent });
-        return await res.text();
-    } catch (e) {
-        console.error("Agenda fetch error:", e);
-        return "";
-    }
-}
-
-/* =========================
-   HTTP
-========================= */
-
-fastify.get("/", async (_, reply) => {
-    reply.send({ ok: true });
-});
 
 fastify.all("/incoming-call", async (request, reply) => {
-    const agenda = await fetchAgendaData();
-
-    global.SYSTEM_MESSAGE = `
-Você é uma assistente telefônica da clínica Modelo.
-Hoje é dia ${obterDataFormatada()}.
-
-Siga a agenda abaixo e ajude o cliente a marcar consulta.
-
-<Agenda>
-${agenda}
-</Agenda>
-`;
-
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -87,13 +43,11 @@ fastify.register(async (fastify) => {
         console.log("Client connected");
 
         let streamSid = null;
-        let latestMediaTimestamp = 0;
-
         let twilioStarted = false;
         let openaiReady = false;
         let sessionInitialized = false;
 
-        let audioBuffer = Buffer.alloc(0); // 🔥 buffer áudio twilio
+        let audioBuffer = Buffer.alloc(0);
 
         const openAiWs = new WebSocket(
             "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
@@ -113,35 +67,31 @@ fastify.register(async (fastify) => {
 
             sessionInitialized = true;
 
+            // configuração da sessão
             openAiWs.send(JSON.stringify({
                 type: "session.update",
                 session: {
                     input_audio_format: "g711_ulaw",
                     output_audio_format: "g711_ulaw",
-                    voice: VOICE,
-                    modalities: ["text", "audio"],
-                    instructions: global.SYSTEM_MESSAGE,
-                    temperature: 0.8,
+                    voice: "alloy",
+                    modalities: ["audio", "text"],
+                    temperature: 0.7,
                 }
             }));
 
-            sendGreeting();
+            // 🔥 força fala imediata
+            speakGreeting();
         };
 
-        const sendGreeting = () => {
+        const speakGreeting = () => {
             openAiWs.send(JSON.stringify({
-                type: "conversation.item.create",
-                item: {
-                    type: "message",
-                    role: "user",
-                    content: [{
-                        type: "input_text",
-                        text: 'Cumprimente: "Oi, sou o assistente da clínica Modelo, como posso te ajudar?"'
-                    }]
+                type: "response.create",
+                response: {
+                    modalities: ["audio"],
+                    instructions:
+                        "Diga exatamente: Olá, sou o assistente da clínica Modelo. Como posso te ajudar?"
                 }
             }));
-
-            openAiWs.send(JSON.stringify({ type: "response.create" }));
         };
 
         /* ========= OPENAI ========= */
@@ -160,7 +110,7 @@ fastify.register(async (fastify) => {
                 const chunk = Buffer.from(msg.delta, "base64");
                 audioBuffer = Buffer.concat([audioBuffer, chunk]);
 
-                // 🔥 Twilio exige frames de 160 bytes (20ms)
+                // Twilio precisa frames de 160 bytes
                 while (audioBuffer.length >= 160) {
 
                     const frame = audioBuffer.subarray(0, 160);
@@ -187,20 +137,25 @@ fastify.register(async (fastify) => {
                 case "start":
                     streamSid = data.start.streamSid;
                     twilioStarted = true;
-                    latestMediaTimestamp = 0;
                     console.log("Stream started:", streamSid);
                     tryInit();
                     break;
 
                 case "media":
-                    latestMediaTimestamp = data.media.timestamp;
-
+                    // envia áudio do caller para OpenAI
                     if (openAiWs.readyState === WebSocket.OPEN) {
                         openAiWs.send(JSON.stringify({
                             type: "input_audio_buffer.append",
                             audio: data.media.payload
                         }));
+
+                        openAiWs.send(JSON.stringify({
+                            type: "input_audio_buffer.commit"
+                        }));
                     }
+                    break;
+
+                case "mark":
                     break;
             }
         });
