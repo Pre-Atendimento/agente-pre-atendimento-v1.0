@@ -10,7 +10,7 @@ dotenv.config();
 const { OPENAI_API_KEY } = process.env;
 
 if (!OPENAI_API_KEY) {
-    console.error("Missing OpenAI API key. Please set it in the .env file.");
+    console.error("Missing OpenAI API key.");
     process.exit(1);
 }
 
@@ -20,47 +20,26 @@ fastify.register(fastifyWs);
 
 function obterDataFormatada() {
     const hoje = new Date();
-    const opções = {
+    return hoje.toLocaleDateString("pt-BR", {
         day: "numeric",
         month: "long",
         year: "numeric",
         timeZone: "America/Sao_Paulo",
-    };
-    return hoje.toLocaleDateString("pt-BR", opções);
+    });
 }
 
-const SYSTEM_MESSAGE_BASE = `Você é uma assistente telefônica da clínica Modelo. Nessa clínica atendem os profissionais listados no XML abaixo. hoje é dia ${obterDataFormatada()}, e você deve receber ligações de pessoas com intenção de marcar consulta com um dos profissionais, ou ambos... você pode fornecer duas datas disponíveis por vez e perguntar se alguma delas é de interesse do usuário, se não for, pode oferecer alguma outra data, como podem ter vários dias com vários horários cada, você pode começar perguntando se prefere pela manhã ou pela tarde, e baseado nisso, sugerir horários livres que estão na lista abaixo.
-
-A clínica modelo fica situada na Avenida Dom Pedro II n 750, em São Lourenço, Minas Gerais.
-
-Pergunte o nome completo do cliente caso ele queira marcar uma consulta;
-Pergunte também se o numero de telefone para contato é o mesmo que ele usou para ligar.
-
-Caso na mesma ligação o cliente queira marcar uma outra consulta para outra pessoa, lembre de perguntar o nome da outra pessoa também.
-
-Confirme se a consulta será por algum plano de saúde, ou se será particular, ou se será retorno.
-
-<rules>
-Ao sugerir datas, se a data for no mesmo mês atual, pode responder somente com o Dia sem mencionar o mês. fale dia e mês somente quando for para mês diferente do atual.
-
-Faça somente uma pergunta por vez.
-
-Após o usuário informar o nome completo, você pode chamá-lo posteriormente somente pelo primeiro nome.
-
-Caso o numero de telefone não seja o mesmo que o cliente usou para ligar, pergunte se o numero de telefone.
-</rules>`;
+const SYSTEM_MESSAGE_BASE = `Você é uma assistente telefônica da clínica Modelo. Hoje é dia ${obterDataFormatada()}.
+Siga as instruções da agenda e auxilie no agendamento.`;
 
 async function fetchAgendaData() {
     const url = "https://srv658237.hstgr.cloud/clinica.php";
     const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
     try {
-        const response = await fetch(url, { agent: httpsAgent });
-        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-        const data = await response.text();
-        return data;
-    } catch (error) {
-        console.error("Error fetching agenda data:", error);
+        const res = await fetch(url, { agent: httpsAgent });
+        return await res.text();
+    } catch (e) {
+        console.error("Agenda error:", e);
         return "";
     }
 }
@@ -68,41 +47,27 @@ async function fetchAgendaData() {
 const VOICE = "alloy";
 const PORT = process.env.PORT || 5050;
 
-const LOG_EVENT_TYPES = [
-    "error",
-    "response.content.done",
-    "rate_limits.updated",
-    "response.done",
-    "input_audio_buffer.committed",
-    "input_audio_buffer.speech_stopped",
-    "input_audio_buffer.speech_started",
-    "session.created",
-];
-
-const SHOW_TIMING_MATH = false;
-
-fastify.get("/", async (request, reply) => {
-    reply.send({ message: "Twilio Media Stream Server is running!" });
+fastify.get("/", async (_, reply) => {
+    reply.send({ ok: true });
 });
 
 fastify.all("/incoming-call", async (request, reply) => {
-    const agendaData = await fetchAgendaData();
+    const agenda = await fetchAgendaData();
     global.SYSTEM_MESSAGE =
-        SYSTEM_MESSAGE_BASE + "\n<Agenda>\n" + agendaData + "\n</Agenda>";
-    console.log(SYSTEM_MESSAGE);
+        SYSTEM_MESSAGE_BASE + "\n<Agenda>\n" + agenda + "\n</Agenda>";
 
-    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-    <Response>
-        <Connect>
-            <Stream url="wss://${request.headers.host}/media-stream" />
-        </Connect>
-    </Response>`;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="wss://${request.headers.host}/media-stream" />
+    </Connect>
+</Response>`;
 
-    reply.type("text/xml").send(twimlResponse);
+    reply.type("text/xml").send(twiml);
 });
 
 fastify.register(async (fastify) => {
-    fastify.get("/media-stream", { websocket: true }, (connection, req) => {
+    fastify.get("/media-stream", { websocket: true }, (connection) => {
         console.log("Client connected");
 
         let streamSid = null;
@@ -111,6 +76,11 @@ fastify.register(async (fastify) => {
         let markQueue = [];
         let responseStartTimestampTwilio = null;
 
+        // 🔥 FLAGS DE SINCRONIZAÇÃO
+        let twilioStarted = false;
+        let openaiReady = false;
+        let sessionInitialized = false;
+
         const openAiWs = new WebSocket(
             "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
             {
@@ -118,8 +88,16 @@ fastify.register(async (fastify) => {
                     Authorization: `Bearer ${OPENAI_API_KEY}`,
                     "OpenAI-Beta": "realtime=v1",
                 },
-            },
+            }
         );
+
+        const tryInit = () => {
+            if (sessionInitialized) return;
+            if (!twilioStarted || !openaiReady) return;
+
+            sessionInitialized = true;
+            initializeSession();
+        };
 
         const initializeSession = () => {
             const sessionUpdate = {
@@ -140,178 +118,86 @@ fastify.register(async (fastify) => {
                 },
             };
 
-            console.log(
-                "Session Update:",
-                JSON.stringify(sessionUpdate, null, 2),
-            );
             openAiWs.send(JSON.stringify(sessionUpdate));
-            sendInitialConversationItem();
+            sendInitialGreeting();
         };
 
-        const sendInitialConversationItem = () => {
-            const initialConversationItem = {
+        const sendInitialGreeting = () => {
+            openAiWs.send(JSON.stringify({
                 type: "conversation.item.create",
                 item: {
                     type: "message",
                     role: "user",
-                    content: [
-                        {
-                            type: "input_text",
-                            text: 'Comprimente o usuario com boas vindas, diga: "Oi, sou um assistente da clinica modelo, como que eu posso te ajudar?"',
-                        },
-                    ],
-                },
-            };
+                    content: [{
+                        type: "input_text",
+                        text: 'Comprimente o usuário: "Oi, sou um assistente da clínica Modelo, como posso te ajudar?"'
+                    }]
+                }
+            }));
 
-            if (SHOW_TIMING_MATH) {
-                console.log(
-                    "Initial conversation item:",
-                    JSON.stringify(initialConversationItem),
-                );
-            }
-            openAiWs.send(JSON.stringify(initialConversationItem));
             openAiWs.send(JSON.stringify({ type: "response.create" }));
         };
 
-        const handleSpeechStartedEvent = () => {
-            if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
-                const elapsedTime =
-                    latestMediaTimestamp - responseStartTimestampTwilio;
-                if (SHOW_TIMING_MATH) {
-                    console.log(`Elapsed time: ${elapsedTime}ms`);
-                }
-
-                if (lastAssistantItem) {
-                    const truncateEvent = {
-                        type: "conversation.item.truncate",
-                        item_id: lastAssistantItem,
-                        content_index: 0,
-                        audio_end_ms: elapsedTime,
-                    };
-                    if (SHOW_TIMING_MATH) {
-                        console.log(
-                            "Truncation event:",
-                            JSON.stringify(truncateEvent),
-                        );
-                    }
-                    openAiWs.send(JSON.stringify(truncateEvent));
-                }
-
-                connection.send(
-                    JSON.stringify({
-                        event: "clear",
-                        streamSid: streamSid,
-                    }),
-                );
-
-                markQueue = [];
-                lastAssistantItem = null;
-                responseStartTimestampTwilio = null;
-            }
-        };
-
-        const sendMark = (connection, streamSid) => {
-            if (streamSid) {
-                const markEvent = {
-                    event: "mark",
-                    streamSid: streamSid,
-                    mark: { name: "responsePart" },
-                };
-                connection.send(JSON.stringify(markEvent));
-                markQueue.push("responsePart");
-            }
-        };
-
         openAiWs.on("open", () => {
-            console.log("Connected to OpenAI Realtime API");
-            setTimeout(initializeSession, 100);
+            console.log("OpenAI connected");
+            openaiReady = true;
+            tryInit();
         });
 
         openAiWs.on("message", (data) => {
-            try {
-                const response = JSON.parse(data);
+            const response = JSON.parse(data);
 
-                if (LOG_EVENT_TYPES.includes(response.type)) {
-                    console.log(`Event: ${response.type}`, response);
-                }
+            if (response.type === "response.audio.delta" && response.delta && streamSid) {
 
-                if (
-                    response.type === "response.audio.delta" &&
-                    response.delta
-                ) {
-                    const audioDelta = {
-                        event: "media",
-                        streamSid: streamSid,
-                        media: {
-                            payload: Buffer.from(
-                                response.delta,
-                                "base64",
-                            ).toString("base64"),
-                        },
-                    };
-                    connection.send(JSON.stringify(audioDelta));
+                connection.send(JSON.stringify({
+                    event: "media",
+                    streamSid,
+                    media: { payload: response.delta } // ✅ envia direto
+                }));
 
-                    if (!responseStartTimestampTwilio) {
-                        responseStartTimestampTwilio = latestMediaTimestamp;
-                        if (SHOW_TIMING_MATH) {
-                            console.log(
-                                `Start timestamp: ${responseStartTimestampTwilio}ms`,
-                            );
-                        }
-                    }
+                if (!responseStartTimestampTwilio)
+                    responseStartTimestampTwilio = latestMediaTimestamp;
 
-                    if (response.item_id) {
-                        lastAssistantItem = response.item_id;
-                    }
+                if (response.item_id)
+                    lastAssistantItem = response.item_id;
 
-                    sendMark(connection, streamSid);
-                }
+                connection.send(JSON.stringify({
+                    event: "mark",
+                    streamSid,
+                    mark: { name: "responsePart" }
+                }));
 
-                if (response.type === "input_audio_buffer.speech_started") {
-                    handleSpeechStartedEvent();
-                }
-            } catch (error) {
-                console.error("Error processing message:", error, "Raw:", data);
+                markQueue.push("responsePart");
             }
         });
 
         connection.on("message", (message) => {
-            try {
-                const data = JSON.parse(message);
+            const data = JSON.parse(message);
 
-                switch (data.event) {
-                    case "media":
-                        latestMediaTimestamp = data.media.timestamp;
-                        if (SHOW_TIMING_MATH) {
-                            console.log(
-                                `Media timestamp: ${latestMediaTimestamp}ms`,
-                            );
-                        }
-                        if (openAiWs.readyState === WebSocket.OPEN) {
-                            const audioAppend = {
-                                type: "input_audio_buffer.append",
-                                audio: data.media.payload,
-                            };
-                            openAiWs.send(JSON.stringify(audioAppend));
-                        }
-                        break;
-                    case "start":
-                        streamSid = data.start.streamSid;
-                        console.log("Stream started:", streamSid);
-                        responseStartTimestampTwilio = null;
-                        latestMediaTimestamp = 0;
-                        break;
-                    case "mark":
-                        if (markQueue.length > 0) {
-                            markQueue.shift();
-                        }
-                        break;
-                    default:
-                        console.log("Non-media event:", data.event);
-                        break;
-                }
-            } catch (error) {
-                console.error("Parse error:", error, "Message:", message);
+            switch (data.event) {
+
+                case "start":
+                    streamSid = data.start.streamSid;
+                    twilioStarted = true;
+                    latestMediaTimestamp = 0;
+                    console.log("Stream started:", streamSid);
+                    tryInit();
+                    break;
+
+                case "media":
+                    latestMediaTimestamp = data.media.timestamp;
+
+                    if (openAiWs.readyState === WebSocket.OPEN) {
+                        openAiWs.send(JSON.stringify({
+                            type: "input_audio_buffer.append",
+                            audio: data.media.payload
+                        }));
+                    }
+                    break;
+
+                case "mark":
+                    if (markQueue.length) markQueue.shift();
+                    break;
             }
         });
 
@@ -319,18 +205,10 @@ fastify.register(async (fastify) => {
             if (openAiWs.readyState === WebSocket.OPEN) openAiWs.close();
             console.log("Client disconnected");
         });
-
-        openAiWs.on("close", () => {
-            console.log("Disconnected from OpenAI API");
-        });
-
-        openAiWs.on("error", (error) => {
-            console.error("OpenAI WebSocket error:", error);
-        });
     });
 });
 
-fastify.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
+fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
     if (err) {
         console.error(err);
         process.exit(1);
