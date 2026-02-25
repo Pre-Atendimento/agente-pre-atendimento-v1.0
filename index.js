@@ -18,9 +18,15 @@ const fastify = Fastify();
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
+const PORT = process.env.PORT || 5050;
+const VOICE = "alloy";
+
+/* =========================
+   UTIL
+========================= */
+
 function obterDataFormatada() {
-    const hoje = new Date();
-    return hoje.toLocaleDateString("pt-BR", {
+    return new Date().toLocaleDateString("pt-BR", {
         day: "numeric",
         month: "long",
         year: "numeric",
@@ -28,24 +34,21 @@ function obterDataFormatada() {
     });
 }
 
-const SYSTEM_MESSAGE_BASE = `Você é uma assistente telefônica da clínica Modelo. Hoje é dia ${obterDataFormatada()}.
-Siga as instruções da agenda e auxilie no agendamento.`;
-
 async function fetchAgendaData() {
     const url = "https://srv658237.hstgr.cloud/clinica.php";
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
+    const agent = new https.Agent({ rejectUnauthorized: false });
     try {
-        const res = await fetch(url, { agent: httpsAgent });
+        const res = await fetch(url, { agent });
         return await res.text();
     } catch (e) {
-        console.error("Agenda error:", e);
+        console.error("Agenda fetch error:", e);
         return "";
     }
 }
 
-const VOICE = "alloy";
-const PORT = process.env.PORT || 5050;
+/* =========================
+   HTTP
+========================= */
 
 fastify.get("/", async (_, reply) => {
     reply.send({ ok: true });
@@ -53,18 +56,31 @@ fastify.get("/", async (_, reply) => {
 
 fastify.all("/incoming-call", async (request, reply) => {
     const agenda = await fetchAgendaData();
-    global.SYSTEM_MESSAGE =
-        SYSTEM_MESSAGE_BASE + "\n<Agenda>\n" + agenda + "\n</Agenda>";
+
+    global.SYSTEM_MESSAGE = `
+Você é uma assistente telefônica da clínica Modelo.
+Hoje é dia ${obterDataFormatada()}.
+
+Siga a agenda abaixo e ajude o cliente a marcar consulta.
+
+<Agenda>
+${agenda}
+</Agenda>
+`;
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Connect>
-        <Stream url="wss://${request.headers.host}/media-stream" />
-    </Connect>
+  <Connect>
+    <Stream url="wss://${request.headers.host}/media-stream" />
+  </Connect>
 </Response>`;
 
     reply.type("text/xml").send(twiml);
 });
+
+/* =========================
+   MEDIA STREAM
+========================= */
 
 fastify.register(async (fastify) => {
     fastify.get("/media-stream", { websocket: true }, (connection) => {
@@ -72,14 +88,12 @@ fastify.register(async (fastify) => {
 
         let streamSid = null;
         let latestMediaTimestamp = 0;
-        let lastAssistantItem = null;
-        let markQueue = [];
-        let responseStartTimestampTwilio = null;
 
-        // 🔥 FLAGS DE SINCRONIZAÇÃO
         let twilioStarted = false;
         let openaiReady = false;
         let sessionInitialized = false;
+
+        let audioBuffer = Buffer.alloc(0); // 🔥 buffer áudio twilio
 
         const openAiWs = new WebSocket(
             "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
@@ -91,38 +105,30 @@ fastify.register(async (fastify) => {
             }
         );
 
+        /* ========= INIT ========= */
+
         const tryInit = () => {
             if (sessionInitialized) return;
             if (!twilioStarted || !openaiReady) return;
 
             sessionInitialized = true;
-            initializeSession();
-        };
 
-        const initializeSession = () => {
-            const sessionUpdate = {
+            openAiWs.send(JSON.stringify({
                 type: "session.update",
                 session: {
-                    turn_detection: {
-                        type: "server_vad",
-                        threshold: 0.5,
-                        prefix_padding_ms: 300,
-                        silence_duration_ms: 750,
-                    },
                     input_audio_format: "g711_ulaw",
                     output_audio_format: "g711_ulaw",
                     voice: VOICE,
-                    instructions: global.SYSTEM_MESSAGE,
                     modalities: ["text", "audio"],
+                    instructions: global.SYSTEM_MESSAGE,
                     temperature: 0.8,
-                },
-            };
+                }
+            }));
 
-            openAiWs.send(JSON.stringify(sessionUpdate));
-            sendInitialGreeting();
+            sendGreeting();
         };
 
-        const sendInitialGreeting = () => {
+        const sendGreeting = () => {
             openAiWs.send(JSON.stringify({
                 type: "conversation.item.create",
                 item: {
@@ -130,13 +136,15 @@ fastify.register(async (fastify) => {
                     role: "user",
                     content: [{
                         type: "input_text",
-                        text: 'Comprimente o usuário: "Oi, sou um assistente da clínica Modelo, como posso te ajudar?"'
+                        text: 'Cumprimente: "Oi, sou o assistente da clínica Modelo, como posso te ajudar?"'
                     }]
                 }
             }));
 
             openAiWs.send(JSON.stringify({ type: "response.create" }));
         };
+
+        /* ========= OPENAI ========= */
 
         openAiWs.on("open", () => {
             console.log("OpenAI connected");
@@ -145,31 +153,31 @@ fastify.register(async (fastify) => {
         });
 
         openAiWs.on("message", (data) => {
-            const response = JSON.parse(data);
+            const msg = JSON.parse(data);
 
-            if (response.type === "response.audio.delta" && response.delta && streamSid) {
+            if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
 
-                connection.send(JSON.stringify({
-                    event: "media",
-                    streamSid,
-                    media: { payload: response.delta } // ✅ envia direto
-                }));
+                const chunk = Buffer.from(msg.delta, "base64");
+                audioBuffer = Buffer.concat([audioBuffer, chunk]);
 
-                if (!responseStartTimestampTwilio)
-                    responseStartTimestampTwilio = latestMediaTimestamp;
+                // 🔥 Twilio exige frames de 160 bytes (20ms)
+                while (audioBuffer.length >= 160) {
 
-                if (response.item_id)
-                    lastAssistantItem = response.item_id;
+                    const frame = audioBuffer.subarray(0, 160);
+                    audioBuffer = audioBuffer.subarray(160);
 
-                connection.send(JSON.stringify({
-                    event: "mark",
-                    streamSid,
-                    mark: { name: "responsePart" }
-                }));
-
-                markQueue.push("responsePart");
+                    connection.send(JSON.stringify({
+                        event: "media",
+                        streamSid,
+                        media: {
+                            payload: frame.toString("base64")
+                        }
+                    }));
+                }
             }
         });
+
+        /* ========= TWILIO ========= */
 
         connection.on("message", (message) => {
             const data = JSON.parse(message);
@@ -194,19 +202,21 @@ fastify.register(async (fastify) => {
                         }));
                     }
                     break;
-
-                case "mark":
-                    if (markQueue.length) markQueue.shift();
-                    break;
             }
         });
 
         connection.on("close", () => {
-            if (openAiWs.readyState === WebSocket.OPEN) openAiWs.close();
             console.log("Client disconnected");
+            if (openAiWs.readyState === WebSocket.OPEN) {
+                openAiWs.close();
+            }
         });
     });
 });
+
+/* =========================
+   START
+========================= */
 
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
     if (err) {
