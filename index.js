@@ -1,4 +1,3 @@
-```javascript
 import Fastify from "fastify";
 import WebSocket from "ws";
 import dotenv from "dotenv";
@@ -21,18 +20,19 @@ fastify.register(fastifyWs);
 const PORT = process.env.PORT || 5050;
 
 fastify.all("/incoming-call", async (request, reply) => {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="wss://${request.headers.host}/media-stream" />
-  </Connect>
-</Response>`;
+    const twiml =
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<Response>' +
+        '<Connect>' +
+        '<Stream url="wss://' + request.headers.host + '/media-stream" />' +
+        '</Connect>' +
+        '</Response>';
 
     reply.type("text/xml").send(twiml);
 });
 
-fastify.register(async (fastify) => {
-    fastify.get("/media-stream", { websocket: true }, (connection) => {
+fastify.register(async (fastifyInstance) => {
+    fastifyInstance.get("/media-stream", { websocket: true }, (connection) => {
         console.log("Client connected");
 
         let streamSid = null;
@@ -126,7 +126,7 @@ fastify.register(async (fastify) => {
 
                     connection.send(JSON.stringify({
                         event: "media",
-                        streamSid,
+                        streamSid: streamSid,
                         media: {
                             payload: frame.toString("base64")
                         }
@@ -169,7 +169,7 @@ fastify.register(async (fastify) => {
                     break;
 
                 case "media":
-                    if (openAiWs.readyState === WebSocket.OPEN && data.media?.payload) {
+                    if (openAiWs.readyState === WebSocket.OPEN && data.media && data.media.payload) {
                         openAiWs.send(JSON.stringify({
                             type: "input_audio_buffer.append",
                             audio: data.media.payload
@@ -208,6 +208,5 @@ fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
         console.error(err);
         process.exit(1);
     }
-    console.log(`Server running on port ${PORT}`);
+    console.log("Server running on port " + PORT);
 });
-```
