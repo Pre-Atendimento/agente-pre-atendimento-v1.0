@@ -77,7 +77,7 @@ fastify.register(async (fastify) => {
                     session: {
                         input_audio_format: "g711_ulaw",
                         output_audio_format: "g711_ulaw",
-                        voice: "alloy",
+                        voice: "marin",
                         modalities: ["audio", "text"],
                         temperature: 0.7,
                     }
@@ -90,7 +90,7 @@ fastify.register(async (fastify) => {
                         response: {
                             modalities: ["audio"],
                             instructions:
-                                "Diga exatamente: Olá, sou o assistente da clínica Modelo. Como posso te ajudar?"
+                                "Diga exatamente: Olá, Como posso te ajudar?"
                         }
                     }));
                 }, 300);
