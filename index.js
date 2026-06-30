@@ -61,7 +61,7 @@ fastify.register(async (fastifyInstance) => {
                 type: "response.create",
                 response: {
                     modalities: ["audio", "text"],
-                    instructions: "Diga exatamente: Olá, como posso te ajudar?"
+                    instructions: "Diga exatamente: Olá, Eu sou uma Agente de Pre Atendimento Virtual. Eu posso ser uma vendedora da Sua Empresa, ou uma Secretaria. Como posso te ajudar?"
                 }
             }));
 
@@ -87,25 +87,35 @@ fastify.register(async (fastifyInstance) => {
             }
 
             if (msg.type === "session.created") {
-                openAiWs.send(JSON.stringify({
-                    type: "session.update",
-                    session: {
-                        input_audio_format: "g711_ulaw",
-                        output_audio_format: "g711_ulaw",
-                        voice: "alloy",
-                        modalities: ["audio", "text"],
-                        temperature: 0.7,
-                        instructions: "Você é um assistente de voz em português do Brasil. Fale de forma curta, clara e natural.",
-                        turn_detection: {
-                            type: "server_vad",
-                            silence_duration_ms: 500,
-                            prefix_padding_ms: 300,
-                            threshold: 0.5,
-                            create_response: true
-                        }
+    openAiWs.send(JSON.stringify({
+        type: "session.update",
+        session: {
+            type: "realtime",
+            instructions: "Você é um assistente de voz em português do Brasil. Fale de forma curta, clara e natural.",
+            output_modalities: ["audio"],
+            audio: {
+                input: {
+                    format: {
+                        type: "audio/pcmu"
+                    },
+                    turn_detection: {
+                        type: "server_vad",
+                        silence_duration_ms: 500,
+                        prefix_padding_ms: 300,
+                        threshold: 0.5,
+                        create_response: true
                     }
-                }));
+                },
+                output: {
+                    format: {
+                        type: "audio/pcmu"
+                    },
+                    voice: "alloy"
+                }
             }
+        }
+    }));
+}
 
             if (msg.type === "session.updated") {
                 sessionReady = true;
