@@ -6,12 +6,14 @@ import fastifyWs from "@fastify/websocket";
 
 dotenv.config();
 
-const { OPENAI_API_KEY } = process.env;
-
-if (!OPENAI_API_KEY) {
-    console.error("Missing OpenAI API key");
-    process.exit(1);
-}
+const openaiWs = new WebSocket(
+    "wss://api.openai.com/v1/realtime?model=gpt-realtime-2",
+    {
+        headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+    }
+);
 
 const fastify = Fastify({ logger: false });
 fastify.register(fastifyFormBody);
@@ -61,7 +63,7 @@ fastify.register(async (fastifyInstance) => {
                 type: "response.create",
                 response: {
                     modalities: ["audio", "text"],
-                    instructions: "Diga exatamente: Olá, como posso te ajudar?"
+                    instructions: "Diga exatamente: Olá, Eu sou uma Agente de Pre Atendimento, eu posso ser como uma secretaria pra voce. Como posso te ajudar?"
                 }
             }));
 
