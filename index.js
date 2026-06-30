@@ -61,7 +61,7 @@ fastify.register(async (fastifyInstance) => {
                 type: "response.create",
                 response: {
                     output_modalities: ["audio"],
-                    instructions: "Diga exatamente: Olá, Eu sou uma Agente de Pre Atendimento Virtual. Eu posso ser uma vendedora da Sua Empresa, ou uma Secretaria. Como posso te ajudar?"
+                    instructions: "Cumprimente de forma natural, cordial e profissional em português do Brasil, com pausas leves e ritmo de conversa humana. Diga: Olá, eu sou a agente virtual de pré-atendimento da Sua Empresa. Posso ajudar como vendedora ou secretária. Como posso ajudar?"
                 }
             }));
 
@@ -91,7 +91,7 @@ fastify.register(async (fastifyInstance) => {
         type: "session.update",
         session: {
             type: "realtime",
-            instructions: "Você é um assistente de voz em português do Brasil. Fale de forma curta, clara e natural.",
+            instructions: "Você é uma agente virtual de pré-atendimento em português do Brasil. Fale com naturalidade, calma e ritmo humano. Use pausas leves entre ideias, frases curtas e entonação cordial e profissional. Evite leitura mecânica, fala acelerada, excesso de entusiasmo e tom robótico.",
             output_modalities: ["audio"],
             audio: {
                 input: {
