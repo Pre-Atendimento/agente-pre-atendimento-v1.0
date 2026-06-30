@@ -98,13 +98,14 @@ fastify.register(async (fastifyInstance) => {
                     format: {
                         type: "audio/pcmu"
                     },
-                    turn_detection: {
-                        type: "server_vad",
-                        silence_duration_ms: 500,
-                        prefix_padding_ms: 300,
-                        threshold: 0.5,
-                        create_response: true
-                    }
+                  turn_detection: {
+    type: "server_vad",
+    silence_duration_ms: 500,
+    prefix_padding_ms: 300,
+    threshold: 0.5,
+    create_response: true,
+    interrupt_response: false
+}
                 },
                 output: {
                     format: {
