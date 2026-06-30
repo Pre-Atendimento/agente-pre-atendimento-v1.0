@@ -110,7 +110,7 @@ fastify.register(async (fastifyInstance) => {
                     format: {
                         type: "audio/pcmu"
                     },
-                    voice: "alloy"
+                    voice: "marin"
                 }
             }
         }
