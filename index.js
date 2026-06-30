@@ -41,12 +41,11 @@ fastify.register(async (fastifyInstance) => {
         let greetingSent = false;
 
         const openAiWs = new WebSocket(
-            "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+            "wss://api.openai.com/v1/realtime?model=gpt-realtime-2",
             {
                 headers: {
                     Authorization: `Bearer ${OPENAI_API_KEY}`,
-                    "OpenAI-Beta": "realtime=v1",
-                },
+        },
             }
         );
 
