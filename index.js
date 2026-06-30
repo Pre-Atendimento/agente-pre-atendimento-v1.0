@@ -60,7 +60,7 @@ fastify.register(async (fastifyInstance) => {
             openAiWs.send(JSON.stringify({
                 type: "response.create",
                 response: {
-                    modalities: ["audio", "text"],
+                    output_modalities: ["audio"],
                     instructions: "Diga exatamente: Olá, Eu sou uma Agente de Pre Atendimento Virtual. Eu posso ser uma vendedora da Sua Empresa, ou uma Secretaria. Como posso te ajudar?"
                 }
             }));
@@ -123,7 +123,7 @@ fastify.register(async (fastifyInstance) => {
                 maybeSendGreeting();
             }
 
-            if (msg.type === "response.audio.delta" && msg.delta && streamSid) {
+            if (msg.type === "response.output_audio.delta" && msg.delta && streamSid) {
                 const chunk = Buffer.from(msg.delta, "base64");
                 audioBuffer = Buffer.concat([audioBuffer, chunk]);
 
