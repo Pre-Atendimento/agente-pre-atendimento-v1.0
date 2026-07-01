@@ -61,8 +61,7 @@ fastify.register(async (fastifyInstance) => {
                 type: "response.create",
                 response: {
                     output_modalities: ["audio"],
-                    instructions: "Cumprimente de forma natural, cordial e profissional em português do Brasil, com pausas leves e ritmo de conversa humana. Diga: Olá, eu sou a agente virtual de pré-atendimento da Sua Empresa. Posso ajudar como vendedora ou secretária. Como posso ajudar?"
-                }
+            instructions: "Cumprimente de forma natural, cordial e profissional em português do Brasil, com pausas leves e ritmo humano. Diga: Olá, eu sou a agente virtual de pré-atendimento da Sua Empresa. Posso atender seus clientes como vendedora ou secretária virtual, inclusive fora do horário comercial. Para eu mostrar como essa conversa ficaria no seu caso, qual é o ramo do seu negócio?"                }
             }));
 
             console.log("Greeting requested");
